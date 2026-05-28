@@ -1,233 +1,213 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>📚 バーコード読み取り</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8">
+<title>ISBNスキャナ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- ✅ Quagga2 に差し替え -->
-  <script src="https://unpkg.com/@ericblade/quagga2/dist/quagga.js"></script>
+<script src="https://unpkg.com/@ericblade/quagga2/dist/quagga.js"></script>
 
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      height: 100%;
-      font-family: sans-serif;
-      text-align: center;
-    }
+<style>
+  body {
+    margin: 0;
+    font-family: sans-serif;
+    text-align: center;
+  }
 
-    #scanner-container {
-      position: relative;
-      width: 50%;
-      max-width: 400px;
-      margin: auto;
-      overflow: hidden;
-      aspect-ratio: 3/4;
-      background: #000;
-    }
+  #scanner-container {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+    margin: auto;
+    aspect-ratio: 3/4;
+    background: black;
+  }
 
-    /* ✅ クロッピング撤去 → フルフレームで表示 */
-    #scanner-container video,
-    #scanner-container canvas {
-      position: absolute !important;
-      top: 0;
-      left: 0;
-      width: 100% !important;
-      height: 100% !important;
-      object-fit: cover;
-      z-index: 1;
-    }
+  video, canvas {
+    position: absolute !important;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover;
+  }
 
-    /* 赤線のガイド */
-    #overlay-line {
-      position: absolute;
-      top: 50%;
-      left: 0;
-      width: 100%;
-      height: 2px;
-      background: rgba(255,0,0,0.8);
-      transform: translateY(-50%);
-      z-index: 2;
-    }
+  #overlay-line {
+    position: absolute;
+    top: 50%;
+    width: 100%;
+    height: 2px;
+    background: red;
+    z-index: 10;
+  }
 
-    #fixed-buttonsR {
-      position: fixed;
-      bottom: 16px;
-      right: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      z-index: 999;
-    }
+  #status {
+    font-size: 20px;
+    margin: 10px;
+  }
 
-    #fixed-buttonsR button {
-      width: 40vw;
-      height: 20vh;
-      padding: 16px;
-      font-size: 50px;
-      border-radius: 8px;
-    }
-  </style>
+  #latest {
+    font-size: 28px;
+    font-weight: bold;
+    margin: 10px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+  }
+
+  th, td {
+    border: 1px solid #ccc;
+    padding: 4px;
+    font-size: 12px;
+  }
+</style>
 </head>
+
 <body>
 
-  <h2>📷 赤線にバーコードをかざしてください</h2>
+<h2>業務用ISBNスキャナ</h2>
 
-  <label>カメラ選択：
-    <select id="cameraSelect"></select>
-  </label>
+<div id="scanner-container">
+  <div id="overlay-line"></div>
+</div>
 
-  <button onclick="saveAsText()">💾 ローカル保存</button>
+<div id="latest">待機中</div>
+<div id="status">準備中</div>
 
-  <div id="scanner-container">
-    <div id="overlay-line"></div>
-  </div>
+<button onclick="exportCSV()">CSV出力</button>
 
-  <p>ISBN: <span id="result">（未読み取り）</span></p>
-  <canvas id="snapshot" style="display:none;"></canvas>
-
-  <h3>読み取り履歴</h3>
-  <ul id="list-view"></ul>
-
-  <div id="fixed-buttonsR">
-    <button onclick="captureImage()">📷 読み取り</button>
-  </div>
+<table>
+  <thead>
+    <tr>
+      <th>ISBN</th>
+      <th>時刻</th>
+      <th>重複</th>
+    </tr>
+  </thead>
+  <tbody id="log"></tbody>
+</table>
 
 <script>
-  let isbn = null;
-  let list = [];
-  let currentDeviceId = null;
+let lastISBN = null;
+let lastTime = 0;
+let history = [];
 
-  /* 🔽 カメラデバイスの一覧取得 */
-  async function enumerateCameras() {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const select = document.getElementById("cameraSelect");
-    select.innerHTML = "";
+const beep = () => {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = ctx.createOscillator();
+  osc.frequency.value = 800;
+  osc.connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.1);
+};
 
-    devices.forEach(d => {
-      if (d.kind === "videoinput") {
-        const opt = document.createElement("option");
-        opt.value = d.deviceId;
-        opt.textContent = d.label || `カメラ${select.length + 1}`;
-        select.appendChild(opt);
-      }
-    });
+function nowTime() {
+  const d = new Date();
+  return d.toLocaleTimeString();
+}
 
-    if (select.options.length > 0) {
-      currentDeviceId = select.value;
-      startScanner(currentDeviceId);
+function addRow(isbn, time, dup) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td>${isbn}</td>
+    <td>${time}</td>
+    <td>${dup ? "DUP" : ""}</td>
+  `;
+  document.querySelector("#log").prepend(tr);
+}
+
+function handleISBN(code) {
+  const now = Date.now();
+
+  // EAN以外除外（ISBN対策）
+  if (!code.startsWith("978") && !code.startsWith("979")) return;
+
+  document.getElementById("latest").textContent = code;
+
+  // 完全同一の連続読み取りは無視
+  if (code === lastISBN && now - lastTime < 2000) {
+    return;
+  }
+
+  let duplicate = false;
+
+  // 間に別コードが挟まった場合 → 前のものを重複扱い
+  if (lastISBN && code !== lastISBN) {
+    const last = history[history.length - 1];
+    if (last && !last.duplicate) {
+      last.duplicate = true;
+      duplicate = true;
     }
   }
 
-  /* 🔽 Quagga2 によるスキャナ起動 */
-  function startScanner(deviceId) {
-    currentDeviceId = deviceId;
+  const time = nowTime();
 
-    if (Quagga.initialized) {
-      Quagga.stop();
-    }
-
-    Quagga.init({
-      inputStream: {
-        name: "Live",
-        type: "LiveStream",
-        target: document.querySelector('#scanner-container'),
-        constraints: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          facingMode: "environment",
-          advanced: [{ focusMode: "continuous" }]
-        }
-      },
-
-      /* 🔽 認識精度を最大化するオプション */
-      locator: {
-        patchSize: "large",
-        halfSample: false
-      },
-      decoder: {
-        readers: ["ean_reader"]
-      },
-      locate: true,
-      numOfWorkers: 4
-
-    }, function(err) {
-      if (err) {
-        console.error(err);
-        return;
-      }
-      Quagga.start();
-      Quagga.initialized = true;
-    });
-  }
-
-  /* 🔽 カメラ切り替え時 */
-  document.getElementById("cameraSelect").addEventListener("change", function() {
-    startScanner(this.value);
+  history.push({
+    isbn: code,
+    time,
+    duplicate
   });
 
-  enumerateCameras();
+  addRow(code, time, duplicate);
 
+  document.getElementById("status").textContent =
+    duplicate ? "重複検出" : "OK";
 
-  /* 🔽 静止画キャプチャ & Quagga2 decodeSingle */
-  function captureImage() {
-    const canvas = document.getElementById("snapshot");
-    const video = document.querySelector("video");
+  beep();
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+  lastISBN = code;
+  lastTime = now;
+}
 
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+function exportCSV() {
+  if (history.length === 0) return alert("データなし");
 
-    /* decodeSingle にフル画像を渡す（精度向上） */
-    Quagga.decodeSingle({
-      src: canvas.toDataURL(),
-      numOfWorkers: 0,
-      locator: {
-        patchSize: "large",
-        halfSample: false
-      },
-      decoder: { readers: ["ean_reader"] },
-      locate: true
-    }, function(result) {
+  const csv = history.map(h =>
+    `${h.isbn},${h.time},${h.duplicate ? 1 : 0}`
+  ).join("\n");
 
-      if (result && result.codeResult) {
-        isbn = result.codeResult.code;
-        document.getElementById("result").textContent = isbn;
-        list.push(isbn);
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
 
-        const li = document.createElement("li");
-        li.textContent = isbn;
-        document.getElementById("list-view").appendChild(li);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "isbn_log.csv";
+  a.click();
 
-        alert("読み取り成功: " + isbn);
-      } else {
-        document.getElementById("result").textContent = "読み取れませんでした";
-        alert("読み取り失敗");
-      }
+  URL.revokeObjectURL(url);
+}
 
-      Quagga.stop();
-      startScanner(currentDeviceId);
-    });
-  }
-
-  /* 🔽 保存機能 */
-  function saveAsText() {
-    if (list.length === 0) {
-      alert("保存するデータがありません");
-      return;
+// ===== Quagga起動 =====
+Quagga.init({
+  inputStream: {
+    type: "LiveStream",
+    target: document.querySelector("#scanner-container"),
+    constraints: {
+      facingMode: "environment"
     }
-
-    const blob = new Blob([list.join("\n")], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "isbn_list.txt";
-    a.click();
-    URL.revokeObjectURL(url);
+  },
+  decoder: {
+    readers: ["ean_reader"]
+  },
+  locate: true
+}, function(err) {
+  if (err) {
+    console.error(err);
+    return;
   }
 
+  Quagga.start();
+  document.getElementById("status").textContent = "スキャン中";
+});
+
+// ===== リアルタイム検出 =====
+Quagga.onDetected(result => {
+  const code = result?.codeResult?.code;
+  if (!code) return;
+  handleISBN(code);
+});
 </script>
+
 </body>
 </html>
