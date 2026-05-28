@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>📚 バーコード読み取り</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- ✅ Quagga2 に差し替え -->
+  <script src="https://unpkg.com/@ericblade/quagga2/dist/quagga.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: sans-serif;
+      text-align: center;
+    }
+
+    #scanner-container {
+      position: relative;
+      width: 50%;
+      max-width: 400px;
+      margin: auto;
+      overflow: hidden;
+      aspect-ratio: 3/4;
+      background: #000;
+    }
+
+    /* ✅ クロッピング撤去 → フルフレームで表示 */
+    #scanner-container video,
+    #scanner-container canvas {
+      position: absolute !important;
+      top: 0;
+      left: 0;
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: cover;
+      z-index: 1;
+    }
+
+    /* 赤線のガイド */
+    #overlay-line {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: rgba(255,0,0,0.8);
+      transform: translateY(-50%);
+      z-index: 2;
+    }
+
+    #fixed-buttonsR {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 999;
+    }
+
+    #fixed-buttonsR button {
+      width: 40vw;
+      height: 20vh;
+      padding: 16px;
+      font-size: 50px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>📷 赤線にバーコードをかざしてください</h2>
+
+  <label>カメラ選択：
+    <select id="cameraSelect"></select>
+  </label>
+
+  <button onclick="saveAsText()">💾 ローカル保存</button>
+
+  <div id="scanner-container">
+    <div id="overlay-line"></div>
+  </div>
+
+  <p>ISBN: <span id="result">（未読み取り）</span></p>
+  <canvas id="snapshot" style="display:none;"></canvas>
+
+  <h3>読み取り履歴</h3>
+  <ul id="list-view"></ul>
+
+  <div id="fixed-buttonsR">
+    <button onclick="captureImage()">📷 読み取り</button>
+  </div>
+
+<script>
+  let isbn = null;
+  let list = [];
+  let currentDeviceId = null;
+
+  /* 🔽 カメラデバイスの一覧取得 */
+  async function enumerateCameras() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const select = document.getElementById("cameraSelect");
+    select.innerHTML = "";
+
+    devices.forEach(d => {
+      if (d.kind === "videoinput") {
+        const opt = document.createElement("option");
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `カメラ${select.length + 1}`;
+        select.appendChild(opt);
+      }
+    });
+
+    if (select.options.length > 0) {
+      currentDeviceId = select.value;
+      startScanner(currentDeviceId);
+    }
+  }
+
+  /* 🔽 Quagga2 によるスキャナ起動 */
+  function startScanner(deviceId) {
+    currentDeviceId = deviceId;
+
+    if (Quagga.initialized) {
+      Quagga.stop();
+    }
+
+    Quagga.init({
+      inputStream: {
+        name: "Live",
+        type: "LiveStream",
+        target: document.querySelector('#scanner-container'),
+        constraints: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          facingMode: "environment",
+          advanced: [{ focusMode: "continuous" }]
+        }
+      },
+
+      /* 🔽 認識精度を最大化するオプション */
+      locator: {
+        patchSize: "large",
+        halfSample: false
+      },
+      decoder: {
+        readers: ["ean_reader"]
+      },
+      locate: true,
+      numOfWorkers: 4
+
+    }, function(err) {
+      if (err) {
+        console.error(err);
+        return;
+      }
+      Quagga.start();
+      Quagga.initialized = true;
+    });
+  }
+
+  /* 🔽 カメラ切り替え時 */
+  document.getElementById("cameraSelect").addEventListener("change", function() {
+    startScanner(this.value);
+  });
+
+  enumerateCameras();
+
+
+  /* 🔽 静止画キャプチャ & Quagga2 decodeSingle */
+  function captureImage() {
+    const canvas = document.getElementById("snapshot");
+    const video = document.querySelector("video");
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    /* decodeSingle にフル画像を渡す（精度向上） */
+    Quagga.decodeSingle({
+      src: canvas.toDataURL(),
+      numOfWorkers: 0,
+      locator: {
+        patchSize: "large",
+        halfSample: false
+      },
+      decoder: { readers: ["ean_reader"] },
+      locate: true
+    }, function(result) {
+
+      if (result && result.codeResult) {
+        isbn = result.codeResult.code;
+        document.getElementById("result").textContent = isbn;
+        list.push(isbn);
+
+        const li = document.createElement("li");
+        li.textContent = isbn;
+        document.getElementById("list-view").appendChild(li);
+
+        alert("読み取り成功: " + isbn);
+      } else {
+        document.getElementById("result").textContent = "読み取れませんでした";
+        alert("読み取り失敗");
+      }
+
+      Quagga.stop();
+      startScanner(currentDeviceId);
+    });
+  }
+
+  /* 🔽 保存機能 */
+  function saveAsText() {
+    if (list.length === 0) {
+      alert("保存するデータがありません");
+      return;
+    }
+
+    const blob = new Blob([list.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "isbn_list.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+</script>
+</body>
+</html>
