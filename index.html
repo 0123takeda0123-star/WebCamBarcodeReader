@@ -203,7 +203,7 @@ function handleISBN(raw) {
   seen.add(stable);
   lastISBN = stable;
 
-  const time = nowTime();
+  const time = formatDateTime();
 
   history.push({
     isbn: stable,
@@ -223,6 +223,8 @@ function handleISBN(raw) {
 function exportCSV() {
   if (!history.length) return alert("データなし");
 
+  const filename = `isbn_log_${formatFileNameDate()}.csv`;
+
   const csv = history
     .map(h => `${h.isbn},${h.time},${h.flag}`)
     .join("\n");
@@ -232,7 +234,7 @@ function exportCSV() {
 
   const a = document.createElement("a");
   a.href = url;
-  a.download = "isbn_log.csv";
+  a.download = filename;
   a.click();
 
   URL.revokeObjectURL(url);
@@ -267,6 +269,34 @@ Quagga.onDetected(result => {
   if (!code) return;
   handleISBN(code);
 });
+
+  function formatDateTime(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+
+  return (
+    d.getFullYear() + "/" +
+    pad(d.getMonth() + 1) + "/" +
+    pad(d.getDate()) + " " +
+    pad(d.getHours()) + ":" +
+    pad(d.getMinutes()) + ":" +
+    pad(d.getSeconds())
+  );
+}
+
+  function formatFileNameDate(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+
+  return (
+    d.getFullYear() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) + "_" +
+    pad(d.getHours()) +
+    pad(d.getMinutes()) +
+    pad(d.getSeconds())
+  );
+}
+
+  
 </script>
 
 </body>
