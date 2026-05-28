@@ -2,65 +2,68 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>ISBNスキャナ</title>
+<title>業務用ISBNスキャナ</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <script src="https://unpkg.com/@ericblade/quagga2/dist/quagga.js"></script>
 
 <style>
-  body {
-    margin: 0;
-    font-family: sans-serif;
-    text-align: center;
-  }
+body {
+  margin: 0;
+  font-family: sans-serif;
+  text-align: center;
+}
 
-  #scanner-container {
-    position: relative;
-    width: 100%;
-    max-width: 480px;
-    margin: auto;
-    aspect-ratio: 3/4;
-    background: black;
-  }
+#scanner-container {
+  position: relative;
+  width: 100%;
+  max-width: 520px;
+  margin: auto;
+  height: 70vh;
+  background: black;
+  overflow: hidden;
+}
 
-  video, canvas {
-    position: absolute !important;
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: cover;
-  }
+video, canvas {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain; /* ←ズレ対策重要 */
+}
 
-  #overlay-line {
-    position: absolute;
-    top: 50%;
-    width: 100%;
-    height: 2px;
-    background: red;
-    z-index: 10;
-  }
+#overlay-line {
+  position: absolute;
+  top: 50%;
+  width: 100%;
+  height: 2px;
+  background: red;
+  z-index: 10;
+}
 
-  #status {
-    font-size: 20px;
-    margin: 10px;
-  }
+#latest {
+  font-size: 28px;
+  font-weight: bold;
+  margin: 10px;
+}
 
-  #latest {
-    font-size: 28px;
-    font-weight: bold;
-    margin: 10px;
-  }
+#status {
+  font-size: 18px;
+  margin: 5px;
+}
 
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 10px;
-  }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+}
 
-  th, td {
-    border: 1px solid #ccc;
-    padding: 4px;
-    font-size: 12px;
-  }
+th, td {
+  border: 1px solid #ccc;
+  font-size: 12px;
+  padding: 4px;
+}
 </style>
 </head>
 
@@ -78,14 +81,14 @@
 <button onclick="exportCSV()">CSV出力</button>
 
 <table>
-  <thead>
-    <tr>
-      <th>ISBN</th>
-      <th>時刻</th>
-      <th>重複</th>
-    </tr>
-  </thead>
-  <tbody id="log"></tbody>
+<thead>
+<tr>
+  <th>ISBN</th>
+  <th>時刻</th>
+  <th>重複</th>
+</tr>
+</thead>
+<tbody id="log"></tbody>
 </table>
 
 <script>
@@ -93,18 +96,22 @@ let lastISBN = null;
 let lastTime = 0;
 let history = [];
 
-const beep = () => {
+// 3回一致確定用
+let candidate = null;
+let confirmCount = 0;
+
+// ビープ
+function beep() {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   const osc = ctx.createOscillator();
-  osc.frequency.value = 800;
+  osc.frequency.value = 880;
   osc.connect(ctx.destination);
   osc.start();
-  osc.stop(ctx.currentTime + 0.1);
-};
+  osc.stop(ctx.currentTime + 0.08);
+}
 
 function nowTime() {
-  const d = new Date();
-  return d.toLocaleTimeString();
+  return new Date().toLocaleTimeString();
 }
 
 function addRow(isbn, time, dup) {
@@ -120,19 +127,29 @@ function addRow(isbn, time, dup) {
 function handleISBN(code) {
   const now = Date.now();
 
-  // EAN以外除外（ISBN対策）
+  // ISBNフィルタ
   if (!code.startsWith("978") && !code.startsWith("979")) return;
 
   document.getElementById("latest").textContent = code;
 
-  // 完全同一の連続読み取りは無視
-  if (code === lastISBN && now - lastTime < 2000) {
+  // 別コード来たらリセット
+  if (candidate !== code) {
+    candidate = code;
+    confirmCount = 1;
+    document.getElementById("status").textContent = "確認中 (1/3)";
     return;
   }
 
+  confirmCount++;
+  document.getElementById("status").textContent =
+    `確認中 (${confirmCount}/3)`;
+
+  // 3回一致しないと確定しない
+  if (confirmCount < 3) return;
+
+  // ===== 確定 =====
   let duplicate = false;
 
-  // 間に別コードが挟まった場合 → 前のものを重複扱い
   if (lastISBN && code !== lastISBN) {
     const last = history[history.length - 1];
     if (last && !last.duplicate) {
@@ -152,20 +169,23 @@ function handleISBN(code) {
   addRow(code, time, duplicate);
 
   document.getElementById("status").textContent =
-    duplicate ? "重複検出" : "OK";
+    duplicate ? "重複検出" : "確定";
 
   beep();
 
   lastISBN = code;
   lastTime = now;
+
+  candidate = null;
+  confirmCount = 0;
 }
 
 function exportCSV() {
-  if (history.length === 0) return alert("データなし");
+  if (!history.length) return alert("データなし");
 
-  const csv = history.map(h =>
-    `${h.isbn},${h.time},${h.duplicate ? 1 : 0}`
-  ).join("\n");
+  const csv = history
+    .map(h => `${h.isbn},${h.time},${h.duplicate ? 1 : 0}`)
+    .join("\n");
 
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -178,7 +198,7 @@ function exportCSV() {
   URL.revokeObjectURL(url);
 }
 
-// ===== Quagga起動 =====
+// ===== Quagga初期化 =====
 Quagga.init({
   inputStream: {
     type: "LiveStream",
@@ -190,13 +210,13 @@ Quagga.init({
   decoder: {
     readers: ["ean_reader"]
   },
-  locate: true
+  locate: true,
+  halfSample: true
 }, function(err) {
   if (err) {
     console.error(err);
     return;
   }
-
   Quagga.start();
   document.getElementById("status").textContent = "スキャン中";
 });
