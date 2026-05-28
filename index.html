@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>業務用ISBNスキャナ</title>
+<title>業務用ISBNスキャナ（安定版）</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <script src="https://unpkg.com/@ericblade/quagga2/dist/quagga.js"></script>
@@ -49,7 +49,7 @@ video, canvas {
 }
 
 #status {
-  font-size: 16px;
+  font-size: 14px;
   margin: 5px;
 }
 
@@ -69,7 +69,7 @@ th, td {
 
 <body>
 
-<h2>業務用ISBNスキャナ</h2>
+<h2>業務用ISBNスキャナ（安定版）</h2>
 
 <div id="scanner-container">
   <div id="overlay-line"></div>
@@ -94,10 +94,19 @@ th, td {
 <script>
 let lastISBN = null;
 let seen = new Set();
-let candidate = null;
+
+let candidateBuffer = [];
+let confirmCandidate = null;
 let confirmCount = 0;
 
 let history = [];
+
+// ■ 正規化（比較用の最終整形）
+function normalize(code) {
+  return String(code || "")
+    .replace(/\D/g, "")
+    .trim();
+}
 
 // ■ ビープ
 function beep() {
@@ -114,7 +123,7 @@ function nowTime() {
   return new Date().toLocaleTimeString();
 }
 
-// ■ 表追加
+// ■ 表
 function addRow(isbn, time, mark) {
   const tr = document.createElement("tr");
   tr.innerHTML = `
@@ -125,49 +134,84 @@ function addRow(isbn, time, mark) {
   document.querySelector("#log").prepend(tr);
 }
 
-// ■ メイン処理
-function handleISBN(code) {
+// ■ ===== フレームバッファ（誤読対策本体） =====
+function pushBuffer(code) {
+  const now = Date.now();
 
+  candidateBuffer.push({
+    code,
+    t: now
+  });
+
+  // 500ms以上古いもの削除
+  candidateBuffer = candidateBuffer.filter(x => now - x.t < 500);
+
+  // 最頻値を取得
+  const freq = {};
+  let best = null;
+  let bestCount = 0;
+
+  for (const item of candidateBuffer) {
+    const c = item.code;
+    freq[c] = (freq[c] || 0) + 1;
+
+    if (freq[c] > bestCount) {
+      best = c;
+      bestCount = freq[c];
+    }
+  }
+
+  return best;
+}
+
+// ■ メイン処理
+function handleISBN(raw) {
+
+  let code = normalize(raw);
+
+  // ISBNフィルタ
   if (!code.startsWith("978") && !code.startsWith("979")) return;
 
-  document.getElementById("latest").textContent = code;
+  // ===== ① フレーム多数決 =====
+  const stable = pushBuffer(code);
 
-  // ① 直前と同じノイズは無視
-  if (candidate === code) {
-    confirmCount++;
-  } else {
-    candidate = code;
+  if (!stable) return;
+
+  document.getElementById("latest").textContent = stable;
+
+  // ===== ② 3回一致確定 =====
+  if (confirmCandidate !== stable) {
+    confirmCandidate = stable;
     confirmCount = 1;
+    document.getElementById("status").textContent = "確認中 (1/3)";
+    return;
   }
 
+  confirmCount++;
   document.getElementById("status").textContent =
-    `認識中 (${confirmCount}/3)`;
+    `確認中 (${confirmCount}/3)`;
 
-  // ② 3回一致しないと確定しない
   if (confirmCount < 3) return;
 
-  // ③ 連続同一確定はスキップ
-  if (code === lastISBN) return;
+  // ===== ③ 連続重複スキップ =====
+  if (stable === lastISBN) return;
 
+  // ===== ④ 再出現判定 =====
   let mark = "";
+  if (seen.has(stable)) mark = "!";
 
-  // ④ 過去に出ていれば「!」
-  if (seen.has(code)) {
-    mark = "!";
-  }
-
-  seen.add(code);
-  lastISBN = code;
+  seen.add(stable);
+  lastISBN = stable;
 
   const time = nowTime();
 
   history.push({
-    isbn: code,
+    isbn: stable,
     time,
     flag: mark
   });
 
-  addRow(code, time, mark);
+  addRow(stable, time, mark);
 
   document.getElementById("status").textContent =
     mark ? "再出現" : "新規";
@@ -194,7 +238,7 @@ function exportCSV() {
   URL.revokeObjectURL(url);
 }
 
-// ■ Quagga起動
+// ■ Quagga
 Quagga.init({
   inputStream: {
     type: "LiveStream",
